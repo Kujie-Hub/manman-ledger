@@ -13,6 +13,7 @@ from frontend.local_api import ApiError, LocalLedgerGateway
 
 
 API_KEY_SETTING = "personal_ledger_deepseek_api_key"
+ONBOARDING_SETTING = "onboarding_seen_v3"
 
 
 def now_local() -> datetime:
@@ -42,6 +43,12 @@ def kind_label(value: str) -> str:
     return "收入分类" if value == "income" else "支出分类"
 
 
+def type_label(value: str, direction: str) -> str:
+    if value == "transfer":
+        return "转入" if direction == "income" else "转出"
+    return "收入" if value == "income" else "支出"
+
+
 def source_label(value: str) -> str:
     return {
         "alipay": "支付宝",
@@ -61,6 +68,7 @@ class LedgerUI:
         self.section = 0
         self.detail_id: int | None = None
         self.show_unclassified = False
+        self.payment_filter = "全部"
         self.summary: dict = {}
         self.categories: list[dict] = []
         self.bills: list[dict] = []
@@ -80,6 +88,7 @@ class LedgerUI:
                 key = ""
         self.gateway = LocalLedgerGateway(key)
         await self.reload()
+        await self._maybe_show_onboarding()
 
     def _configure_page(self) -> None:
         self.page.title = "慢慢记账"
@@ -109,6 +118,82 @@ class LedgerUI:
                 content=ft.Text(message),
                 bgcolor="#B3261E" if error else "#2F5D50",
                 show_close_icon=True,
+            )
+        )
+
+    async def _maybe_show_onboarding(self) -> None:
+        if self.page.web:
+            return
+        try:
+            seen = await self.prefs.get(ONBOARDING_SETTING)
+        except Exception:
+            seen = None
+        if not seen:
+            self._show_onboarding()
+
+    def _show_onboarding(self) -> None:
+        sections = [
+            (
+                "月度",
+                "左右箭头切换月份，“本月”回到当前月。期初余额是首个有数据的月份起始资金；"
+                "“收入/转入计入余额”会批量设置本月收入和转账账单。",
+            ),
+            (
+                "分类",
+                "支出分类只需设置限额。“已花”自动累计账单，“余额”由限额减去已花得到，"
+                "不需要手动分配。",
+            ),
+            (
+                "导入",
+                "选择文件可导入支付宝 CSV 或微信 XLSX；选择截图会调用 DeepSeek 识别；"
+                "手动记账用于补录单笔账单。重复导入会自动跳过。",
+            ),
+            (
+                "账单",
+                "“编辑”可修正类型、方向和支付方式；转账账单可在“余额设置”中调整"
+                "“记余额”“记花销”。“特殊关注”把账单放到月度页顶部；"
+                "“标记已退还”会生成退款转入。黄色是转账，红色是退款。",
+            ),
+            (
+                "设置",
+                "填写 DeepSeek API Key 才能使用截图识别和模糊账单的智能分类；"
+                "“新手引导”可随时重新打开本说明。",
+            ),
+        ]
+
+        async def close_guide() -> None:
+            if not self.page.web:
+                try:
+                    await self.prefs.set(ONBOARDING_SETTING, True)
+                except Exception:
+                    pass
+            self.page.pop_dialog()
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title=ft.Text("新手引导"),
+                modal=True,
+                content=ft.Column(
+                    [
+                        ft.Column(
+                            [
+                                ft.Text(title, weight=ft.FontWeight.BOLD),
+                                ft.Text(text, size=13, color="#716861"),
+                            ],
+                            spacing=2,
+                        )
+                        for title, text in sections
+                    ],
+                    tight=True,
+                    spacing=14,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                actions=[
+                    ft.FilledButton(
+                        "知道了",
+                        on_click=lambda _: self.page.run_task(close_guide),
+                    )
+                ],
             )
         )
 
@@ -261,24 +346,41 @@ class LedgerUI:
 
     def _month_view(self) -> list[ft.Control]:
         total = ft.TextField(
-            label="总余额",
-            value=str(self.summary.get("total_balance", "0.00")),
+            label="期初余额",
+            value=str(self.summary.get("initial_balance", "0.00")),
             prefix=ft.Text("¥ "),
             width=220,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         income_switch = ft.Switch(
-            label="收入计入余额",
+            label="收入/转入计入余额",
             value=bool(self.summary.get("income_counts_toward_balance", False)),
             on_change=lambda event: self.page.run_task(self._income_switch, event.control.value),
         )
         return [
             self._month_switcher(),
+            self._previous_month_card(),
             ft.Row(
                 [
                     self._metric("可用余额", money(self.summary.get("available_balance")), "#2F5D50"),
                     self._metric("本月支出", money(self.summary.get("expense_total")), "#8C3B2E"),
                     self._metric("本月收入", money(self.summary.get("income_total")), "#245C86"),
+                    self._metric("转账", (
+                        f"入 {money(self.summary.get('transfer_in_total'))} / "
+                        f"出 {money(self.summary.get('transfer_out_total'))}"
+                    ), "#7A4E2D"),
+                    *(
+                        [
+                            self._metric(
+                                "已退还",
+                                f"{self.summary.get('refunded_transfer_count', 0)} 笔 · "
+                                f"{money(self.summary.get('refunded_transfer_total'))}",
+                                "#B3261E",
+                            )
+                        ]
+                        if self.summary.get("refunded_transfer_count", 0)
+                        else []
+                    ),
                 ],
                 wrap=True,
                 spacing=10,
@@ -287,36 +389,133 @@ class LedgerUI:
             self._panel(
                 ft.Column(
                     [
-                        ft.Row(
+                        *(
                             [
-                                total,
-                                ft.FilledButton(
-                                    "保存",
-                                    icon=ft.Icons.SAVE_OUTLINED,
-                                    on_click=lambda _: self.page.run_task(
-                                        self._save_total,
-                                        total.value,
-                                    ),
-                                ),
-                            ],
-                            wrap=True,
-                            spacing=10,
+                                ft.Row(
+                                    [
+                                        total,
+                                        ft.FilledButton(
+                                            "保存",
+                                            icon=ft.Icons.SAVE_OUTLINED,
+                                            on_click=lambda _: self.page.run_task(
+                                                self._save_total,
+                                                total.value,
+                                            ),
+                                        ),
+                                    ],
+                                    wrap=True,
+                                    spacing=10,
+                                )
+                            ]
+                            if not self.summary.get("has_previous_data")
+                            else [ft.Text(f"期初 {money(self.summary.get('opening_balance'))}")]
                         ),
                         income_switch,
                     ],
                     spacing=10,
                 )
             ),
+            self._special_section(),
+            self._payment_summary(),
             ft.Text("分类", size=17, weight=ft.FontWeight.BOLD),
             *self._category_rows(),
         ]
+
+    def _previous_month_card(self) -> ft.Control:
+        if self.summary.get("has_previous_data"):
+            detail = (
+                f"{self.summary['previous_month']} · "
+                f"期末 {money(self.summary['previous_closing_balance'])} · "
+                f"收入 {money(self.summary['previous_income_total'])}"
+            )
+        else:
+            detail = "无数据"
+        return self._panel(
+            ft.Row(
+                [
+                    ft.Text("上月结转", weight=ft.FontWeight.BOLD),
+                    ft.Text(detail, color="#716861"),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            )
+        )
+
+    def _special_section(self) -> ft.Control:
+        specials = [bill for bill in self.bills if bill["is_special"]]
+        if not specials:
+            return ft.Container(height=0)
+        rows: list[ft.Control] = [ft.Text("特殊关注", size=17, weight=ft.FontWeight.BOLD)]
+        for bill in specials:
+            rows.append(
+                ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Column(
+                                    [
+                                        ft.Text(
+                                            bill["description"],
+                                            weight=ft.FontWeight.BOLD,
+                                        ),
+                                        ft.Text(
+                                            f"{type_label(bill['type'], bill['direction'])} · "
+                                            f"{bill['payment_method']}",
+                                            size=11,
+                                            color="#716861",
+                                        ),
+                                    ],
+                                    expand=True,
+                                    spacing=2,
+                                ),
+                                ft.Text(money(bill["amount"]), weight=ft.FontWeight.BOLD),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
+                    ],
+                    spacing=2,
+                )
+            )
+        return self._panel(ft.Column(rows, spacing=8))
+
+    def _payment_summary(self) -> ft.Control:
+        rows = self.summary.get("payment_summary") or []
+        if not rows:
+            return ft.Container(height=0)
+        controls: list[ft.Control] = [
+            ft.Text("按支付方式", size=17, weight=ft.FontWeight.BOLD)
+        ]
+        for item in rows:
+            controls.append(
+                ft.Row(
+                    [
+                        ft.Text(item["payment_method"], weight=ft.FontWeight.BOLD),
+                        ft.Text(
+                            f"收入 {money(item['income'])} · 支出 {money(item['expense'])}"
+                            + (
+                                f" · 转入 {money(item['transfer_in'])}"
+                                f" / 转出 {money(item['transfer_out'])}"
+                                if item["transfer_in"] != "0.00"
+                                or item["transfer_out"] != "0.00"
+                                else ""
+                            ),
+                            size=12,
+                            color="#716861",
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    wrap=True,
+                )
+            )
+        return self._panel(ft.Column(controls, spacing=7))
 
     def _category_rows(self) -> list[ft.Control]:
         if not self.categories:
             return [ft.Text("暂无分类")]
         controls: list[ft.Control] = []
         for category in self.categories:
-            if category["kind"] == "expense":
+            if category["name"].startswith("转账-"):
+                detail = f"流转 {money(category['transfer_actual'])}"
+            elif category["kind"] == "expense":
                 detail = (
                     f"限额 {money(category['limit'])}  ·  "
                     f"已花 {money(category['actual'])}  ·  "
@@ -436,7 +635,9 @@ class LedgerUI:
         ]
 
     def _category_card(self, category: dict) -> ft.Control:
-        if category["kind"] == "expense":
+        if category["name"].startswith("转账-"):
+            line = f"流转 {money(category['transfer_actual'])}"
+        elif category["kind"] == "expense":
             line = (
                 f"限额 {money(category['limit'])}  ·  "
                 f"已花 {money(category['actual'])}  ·  "
@@ -580,13 +781,32 @@ class LedgerUI:
             width=130,
             keyboard_type=ft.KeyboardType.NUMBER,
         )
-        manual_direction = ft.Dropdown(
+        manual_type = ft.Dropdown(
             label="类型",
             value="expense",
-            width=110,
+            width=120,
             options=[
                 ft.DropdownOption(key="expense", text="支出"),
                 ft.DropdownOption(key="income", text="收入"),
+                ft.DropdownOption(key="transfer", text="转账"),
+            ],
+        )
+        manual_direction = ft.Dropdown(
+            label="方向",
+            value="expense",
+            width=110,
+            options=[
+                ft.DropdownOption(key="expense", text="转出/支出"),
+                ft.DropdownOption(key="income", text="转入/收入"),
+            ],
+        )
+        manual_payment = ft.Dropdown(
+            label="支付方式",
+            value=(self.status.get("payment_methods") or ["其他"])[0],
+            width=140,
+            options=[
+                ft.DropdownOption(key=item, text=item)
+                for item in self.status.get("payment_methods", ["其他"])
             ],
         )
         manual_description = ft.TextField(label="说明", width=260)
@@ -624,7 +844,14 @@ class LedgerUI:
                     [
                         ft.Text("手动记账", size=17, weight=ft.FontWeight.BOLD),
                         ft.Row(
-                            [manual_date, manual_amount, manual_direction, manual_description],
+                            [
+                                manual_date,
+                                manual_amount,
+                                manual_type,
+                                manual_direction,
+                                manual_payment,
+                                manual_description,
+                            ],
                             wrap=True,
                             spacing=10,
                         ),
@@ -635,7 +862,9 @@ class LedgerUI:
                                 self._manual_bill,
                                 manual_date.value,
                                 manual_amount.value,
+                                manual_type.value,
                                 manual_direction.value,
+                                manual_payment.value,
                                 manual_description.value,
                             ),
                         ),
@@ -720,7 +949,9 @@ class LedgerUI:
         self,
         occurred_at: str,
         amount: str,
+        bill_type: str,
         direction: str,
+        payment_method: str,
         description: str,
     ) -> None:
         if self.gateway is None:
@@ -734,6 +965,8 @@ class LedgerUI:
         if not description.strip():
             self.notify("请输入说明", error=True)
             return
+        if bill_type != "transfer":
+            direction = bill_type
 
         async def save() -> dict:
             result = await self.gateway.post(
@@ -741,7 +974,9 @@ class LedgerUI:
                 {
                     "occurred_at": occurred_at + "T00:00:00",
                     "amount": amount,
+                    "type": bill_type,
                     "direction": direction,
+                    "payment_method": payment_method,
                     "description": description.strip(),
                 },
             )
@@ -753,6 +988,16 @@ class LedgerUI:
             self.notify("已保存")
 
     def _bill_view(self) -> list[ft.Control]:
+        methods = ["全部", *(self.status.get("payment_methods") or [])]
+        if self.payment_filter not in methods:
+            self.payment_filter = "全部"
+        payment_filter = ft.Dropdown(
+            label="支付方式",
+            value=self.payment_filter,
+            width=150,
+            options=[ft.DropdownOption(key=item, text=item) for item in methods],
+            on_select=lambda event: self._set_payment_filter(event.control.value),
+        )
         if self.show_unclassified:
             items = [bill for bill in self.bills if bill["category_id"] is None]
             heading = ft.Row(
@@ -765,10 +1010,19 @@ class LedgerUI:
                 ]
             )
         else:
-            items = self.bills
+            items = (
+                self.bills
+                if self.payment_filter == "全部"
+                else [
+                    bill
+                    for bill in self.bills
+                    if bill["payment_method"] == self.payment_filter
+                ]
+            )
             heading = ft.Row(
                 [
                     ft.Text(f"{len(items)} 笔", color="#716861"),
+                    payment_filter,
                     ft.TextButton(
                         "未分类",
                         on_click=lambda _: self._open_unclassified(),
@@ -777,6 +1031,10 @@ class LedgerUI:
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             )
         return [self._month_switcher(), heading, *self._bill_cards(items)]
+
+    def _set_payment_filter(self, value: str | None) -> None:
+        self.payment_filter = value or "全部"
+        self.render()
 
     def _open_unclassified(self) -> None:
         self.show_unclassified = True
@@ -806,37 +1064,114 @@ class LedgerUI:
                 )
             sign = "−" if bill["direction"] == "expense" else "+"
             color = "#8C3B2E" if bill["direction"] == "expense" else "#245C86"
+            badges = [
+                ft.Text(type_label(bill["type"], bill["direction"]), size=11, color=color),
+                ft.Text(bill["payment_method"], size=11, color="#716861"),
+            ]
+            if bill["is_special"]:
+                badges.append(ft.Text("特殊关注", size=11, color="#8A5A16"))
+            if bill["type"] == "transfer" and not bill["affect_balance"]:
+                badges.append(ft.Text("不计余额", size=11, color="#B3261E"))
+            if (
+                bill["type"] == "transfer"
+                and bill["direction"] == "expense"
+                and not bill["count_in_balance"]
+            ):
+                badges.append(ft.Text("不计花销", size=11, color="#B3261E"))
+            if bill["is_refunded"]:
+                badges.append(ft.Text("已退还", size=11, color="#B3261E"))
+            if bill["refund_of_bill_id"]:
+                badges.append(ft.Text("退款转入", size=11, color="#245C86"))
+            special_toggle = ft.Checkbox(
+                label="特殊关注",
+                value=bill["is_special"],
+                on_change=lambda event, bill_id=bill["id"]: self.page.run_task(
+                    self._patch_bill,
+                    bill_id,
+                    {"is_special": event.control.value},
+                ),
+            )
+            highlighted = (
+                "#FDECEA"
+                if bill["is_refunded"] or bill["refund_of_bill_id"]
+                else ("#FFF5E8" if bill["type"] == "transfer" else "#FFFFFF")
+            )
             cards.append(
                 self._panel(
-                    ft.Row(
+                    ft.Column(
                         [
-                            ft.Column(
+                            ft.Row(
                                 [
-                                    ft.Text(bill["description"], weight=ft.FontWeight.BOLD),
-                                    ft.Text(
-                                        f"{bill['occurred_at'][:16]} · {source_label(bill['source'])}",
-                                        size=11,
-                                        color="#716861",
+                                    ft.Column(
+                                        [
+                                            ft.Text(
+                                                bill["description"],
+                                                weight=ft.FontWeight.BOLD,
+                                            ),
+                                            ft.Text(
+                                                f"{bill['occurred_at'][:16]} · "
+                                                f"{source_label(bill['source'])}",
+                                                size=11,
+                                                color="#716861",
+                                            ),
+                                            ft.Row(badges, spacing=8, wrap=True),
+                                        ],
+                                        expand=True,
+                                        spacing=3,
+                                    ),
+                                    ft.Column(
+                                        [
+                                            ft.Text(
+                                                f"{sign}{money(bill['amount'])}",
+                                                color=color,
+                                                weight=ft.FontWeight.BOLD,
+                                            ),
+                                            (
+                                                category
+                                                if not compact
+                                                else ft.Text(
+                                                    bill["category_name"],
+                                                    size=11,
+                                                )
+                                            ),
+                                        ],
+                                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                                        spacing=3,
                                     ),
                                 ],
-                                expand=True,
-                                spacing=2,
+                                vertical_alignment=ft.CrossAxisAlignment.START,
                             ),
-                            ft.Column(
+                            ft.Row(
                                 [
-                                    ft.Text(
-                                        f"{sign}{money(bill['amount'])}",
-                                        color=color,
-                                        weight=ft.FontWeight.BOLD,
+                                    special_toggle,
+                                    ft.TextButton(
+                                        "编辑",
+                                        on_click=lambda _, item=bill: self._edit_bill(item),
                                     ),
-                                    category if not compact else ft.Text(bill["category_name"], size=11),
+                                    *(
+                                        [
+                                            ft.TextButton(
+                                                "标记已退还",
+                                                icon=ft.Icons.UNDO,
+                                                on_click=lambda _, bill_id=bill["id"]: self.page.run_task(
+                                                    self._mark_refunded,
+                                                    bill_id,
+                                                ),
+                                            )
+                                        ]
+                                        if bill["type"] == "transfer"
+                                        and bill["direction"] == "expense"
+                                        and not bill["is_refunded"]
+                                        else []
+                                    ),
                                 ],
-                                horizontal_alignment=ft.CrossAxisAlignment.END,
-                                spacing=3,
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                wrap=True,
                             ),
                         ],
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                    )
+                        spacing=6,
+                    ),
+                    bgcolor=highlighted,
                 )
             )
         return cards
@@ -853,6 +1188,122 @@ class LedgerUI:
             await self.reload_data()
 
         await self.action(save)
+
+    async def _patch_bill(self, bill_id: int, payload: dict) -> None:
+        if self.gateway is None:
+            return
+
+        async def save() -> None:
+            await self.gateway.patch(f"/bills/{bill_id}", payload)
+            await self.reload_data()
+
+        await self.action(save)
+
+    def _edit_bill(self, bill: dict) -> None:
+        type_field = ft.Dropdown(
+            label="类型",
+            value=bill["type"],
+            options=[
+                ft.DropdownOption(key="expense", text="支出"),
+                ft.DropdownOption(key="income", text="收入"),
+                ft.DropdownOption(key="transfer", text="转账"),
+            ],
+        )
+        direction_field = ft.Dropdown(
+            label="方向",
+            value=bill["direction"],
+            options=[
+                ft.DropdownOption(key="expense", text="支出/转出"),
+                ft.DropdownOption(key="income", text="收入/转入"),
+            ],
+        )
+        payment_field = ft.Dropdown(
+            label="支付方式",
+            value=bill["payment_method"],
+            options=[
+                ft.DropdownOption(key=item, text=item)
+                for item in self.status.get("payment_methods", ["其他"])
+            ],
+        )
+        affect = ft.Switch(label="记余额", value=bill["affect_balance"])
+        balance_controls: list[ft.Control] = [affect]
+        count: ft.Switch | None = None
+        if bill["direction"] == "expense":
+            count = ft.Switch(label="记花销", value=bill["count_in_balance"])
+            balance_controls.append(count)
+        deduct: ft.Switch | None = None
+        if bill["is_special"]:
+            deduct = ft.Switch(
+                label="特殊关注账单从余额扣除",
+                value=bill["deduct_from_balance"],
+            )
+            balance_controls.append(deduct)
+        balance_section = (
+            ft.ExpansionTile(
+                title="余额设置",
+                controls=balance_controls,
+                dense=True,
+                maintain_state=True,
+                tile_padding=0,
+                controls_padding=ft.Padding.only(top=4),
+            )
+            if bill["type"] == "transfer"
+            else None
+        )
+
+        async def save() -> None:
+            if self.gateway is None:
+                return
+            payload = {
+                "type": type_field.value,
+                "direction": direction_field.value,
+                "payment_method": payment_field.value,
+                "affect_balance": affect.value,
+            }
+            if count is not None:
+                payload["count_in_balance"] = count.value
+            if deduct is not None:
+                payload["deduct_from_balance"] = deduct.value
+            try:
+                await self.gateway.patch(f"/bills/{bill['id']}", payload)
+                self.page.pop_dialog()
+                await self.reload_data()
+            except ApiError as exc:
+                self.notify(str(exc), error=True)
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title=ft.Text("编辑账单"),
+                content=ft.Column(
+                    [
+                        type_field,
+                        direction_field,
+                        payment_field,
+                        *([balance_section] if balance_section is not None else []),
+                    ],
+                    tight=True,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                    ft.FilledButton("保存", on_click=lambda _: self.page.run_task(save)),
+                ],
+            )
+        )
+
+    async def _mark_refunded(self, bill_id: int) -> None:
+        if self.gateway is None:
+            return
+
+        async def save() -> dict:
+            result = await self.gateway.post(f"/bills/{bill_id}/refund", {})
+            await self.reload_data()
+            return result
+
+        result = await self.action(save)
+        if result:
+            self.notify("已标记退还并生成转入退款记录")
 
     def _settings_view(self) -> list[ft.Control]:
         key = ft.TextField(
@@ -882,6 +1333,11 @@ class LedgerUI:
                             "保存",
                             icon=ft.Icons.SAVE_OUTLINED,
                             on_click=lambda _: self.page.run_task(self._save_key, key.value),
+                        ),
+                        ft.TextButton(
+                            "新手引导",
+                            icon=ft.Icons.HELP_OUTLINE,
+                            on_click=lambda _: self._show_onboarding(),
                         ),
                     ],
                     spacing=10,

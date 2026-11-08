@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,4 +46,11 @@ def database_path() -> Path:
             path = root / path
         return path
     return root / "data.db"
+
+
+def payment_methods() -> list[str]:
+    path = RESOURCE_ROOT / "backend" / "config" / "payment_methods.json"
+    with path.open("r", encoding="utf-8") as file:
+        values = json.load(file)
+    return [str(value) for value in values]
 

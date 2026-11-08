@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from backend.config import DeepSeekConfig, load_deepseek_config
+from backend.config import DeepSeekConfig, load_deepseek_config, payment_methods
 from backend.db import Database, db as default_db
 from backend.schemas import (
-    BillCategoryUpdate,
     BillCreate,
+    BillUpdate,
     CategoryCreate,
     CategoryUpdate,
     IncomeSettingUpdate,
@@ -46,12 +46,18 @@ class LedgerApplication:
         )
         self.db.initialize()
 
+    @staticmethod
+    def _payment_method(value: str | None) -> str:
+        allowed = payment_methods()
+        return value if value in allowed else "其他"
+
     def status(self) -> dict:
         return {
             "status": "ok",
             "ai_configured": self.deepseek.configured,
             "ai_model": self.deepseek.config.model,
             "database_path": str(self.db.path),
+            "payment_methods": payment_methods(),
         }
 
     def set_deepseek_key(self, api_key: str) -> None:
@@ -106,8 +112,9 @@ class LedgerApplication:
 
     def update_income_setting(self, payload: IncomeSettingUpdate) -> dict:
         self.balance.validate_month(payload.month)
-        self.balance.set_income_counts_toward_balance(
-            payload.income_counts_toward_balance
+        self.balance.apply_income_switch_to_month(
+            payload.month,
+            payload.income_counts_toward_balance,
         )
         return {
             "message": "收入计入余额设置已更新",
@@ -120,11 +127,18 @@ class LedgerApplication:
         month: str,
         category_id: int | None = None,
         unclassified: bool = False,
+        payment_method: str | None = None,
     ) -> list[dict]:
-        return self.ledger.list_bills(month, category_id, unclassified)
+        return self.ledger.list_bills(
+            month,
+            category_id,
+            unclassified,
+            payment_method,
+        )
 
     async def create_bill(self, payload: BillCreate) -> dict:
         month = payload.occurred_at.strftime("%Y-%m")
+        payment_method = self._payment_method(payload.payment_method)
         if payload.category_id is not None:
             category = self.ledger.get_category(month, payload.category_id)
             if category["kind"] != payload.direction:
@@ -137,6 +151,12 @@ class LedgerApplication:
                 payload.amount,
                 payload.direction,
                 payload.description,
+                payload.type.value,
+                payment_method,
+                payload.is_special,
+                payload.deduct_from_balance,
+                payload.affect_balance,
+                payload.count_in_balance,
             )
             category_ids, warning = await self.classifier.classify(month, [candidate])
             category_id = category_ids[0] if category_ids else None
@@ -146,18 +166,29 @@ class LedgerApplication:
             payload.amount,
             payload.direction,
             payload.description,
+            payload.type.value,
+            payment_method,
+            payload.is_special,
+            payload.deduct_from_balance,
+            payload.affect_balance,
+            payload.count_in_balance,
         )
         inserted, result = self.ledger.insert_bill(bill, category_id)
         if not inserted or result is None:
             raise ValueError("账单写入失败")
         return {"bill": result, "warning": warning}
 
-    def update_bill_category(
+    def update_bill(
         self,
         bill_id: int,
-        payload: BillCategoryUpdate,
+        payload: BillUpdate,
     ) -> dict:
-        return self.ledger.update_bill_category(bill_id, payload.category_id)
+        if payload.payment_method is not None:
+            payload.payment_method = self._payment_method(payload.payment_method)
+        return self.ledger.update_bill(bill_id, payload)
+
+    def mark_transfer_refunded(self, bill_id: int) -> dict:
+        return self.ledger.mark_transfer_refunded(bill_id)
 
     async def import_statement(self, data: bytes, filename: str) -> dict:
         if len(data) > STATEMENT_LIMIT:

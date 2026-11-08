@@ -10,6 +10,7 @@
       "amount": "金额",
       "status": "交易状态",
       "external_id": "交易订单号",
+      "payment_method": "收/付款方式",
       "note": "备注"
     },
     "signature_columns": [
@@ -48,6 +49,7 @@
       "amount": "金额(元)",
       "status": "当前状态",
       "external_id": "交易单号",
+      "payment_method": "支付方式",
       "note": "备注"
     },
     "signature_columns": [

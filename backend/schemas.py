@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CategoryKind(StrEnum):
@@ -16,6 +16,12 @@ class CategoryKind(StrEnum):
 class Direction(StrEnum):
     EXPENSE = "expense"
     INCOME = "income"
+
+
+class BillType(StrEnum):
+    EXPENSE = "expense"
+    INCOME = "income"
+    TRANSFER = "transfer"
 
 
 class MonthUpdate(BaseModel):
@@ -54,9 +60,15 @@ class CategoryUpdate(BaseModel):
 class BillCreate(BaseModel):
     occurred_at: datetime
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
-    direction: Direction
+    type: BillType = BillType.EXPENSE
+    direction: Direction | None = None
     description: str = Field(min_length=1, max_length=300)
     category_id: int | None = Field(default=None, gt=0)
+    is_special: bool = False
+    deduct_from_balance: bool = True
+    affect_balance: bool | None = None
+    payment_method: str = Field(default="其他", max_length=30)
+    count_in_balance: bool | None = None
 
     @field_validator("description")
     @classmethod
@@ -66,9 +78,31 @@ class BillCreate(BaseModel):
             raise ValueError("商品描述不能为空")
         return cleaned
 
+    @model_validator(mode="after")
+    def normalize_type(self):
+        if self.direction is None:
+            if self.type == BillType.TRANSFER:
+                raise ValueError("转账账单必须指定转入或转出方向")
+            self.direction = Direction(self.type.value)
+        if self.type != BillType.TRANSFER and self.direction.value != self.type.value:
+            raise ValueError("收入/支出类型必须与方向一致")
+        if self.affect_balance is None:
+            self.affect_balance = self.type != BillType.INCOME
+        if self.count_in_balance is None:
+            self.count_in_balance = True
+        return self
 
-class BillCategoryUpdate(BaseModel):
+
+class BillUpdate(BaseModel):
     category_id: int | None = Field(default=None, gt=0)
+    type: BillType | None = None
+    direction: Direction | None = None
+    is_special: bool | None = None
+    deduct_from_balance: bool | None = None
+    affect_balance: bool | None = None
+    payment_method: str | None = Field(default=None, max_length=30)
+    is_refunded: bool | None = None
+    count_in_balance: bool | None = None
 
 
 class IncomeSettingUpdate(BaseModel):

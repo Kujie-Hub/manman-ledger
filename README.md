@@ -56,8 +56,11 @@ Android 使用 Flet 提供的 `FLET_APP_STORAGE_DATA` 目录保存 `data.db`。D
 ## 功能
 
 - 按月记录总余额，支持查看和修改。
-- 可选择收入是否计入余额，默认不计入。
-- `转账-转入`始终只记录，不计入余额。
+- 月度余额自动承接上月期末余额。
+- 收入与转账分别记录 `affectBalance`，可逐笔控制是否影响余额。
+- 转账不进入收入或支出统计，只作为独立余额流转。
+- 特殊账单单独置顶，并可控制是否从余额扣除。
+- 特殊账单在界面中显示为“特殊关注”。
 - 支出分类只需设置限额。
 - 花销从总余额自动扣减，不提供手动分配。
 - 分类余额 = 分类限额 − 该分类已花金额。
@@ -67,12 +70,37 @@ Android 使用 Flet 提供的 `FLET_APP_STORAGE_DATA` 目录保存 `data.db`。D
 - 支持支付宝 CSV、微信 XLSX、账单截图和手动记账。
 - CSV/XLSX 按交易单号去重；同一截图按图片内容去重。
 - 明确交易先按生活常识规则分类，其余再交给 DeepSeek；无法判断时保持未分类。
+- 支持现金、微信、支付宝、银行卡、信用卡和其他支付方式。
+- 月度页面按支付方式汇总，账单页可按支付方式筛选。
+- 转账转出可标记为已退还，并自动生成关联的转入退款记录。
+- 转账与退款账单自动默认计入余额和花销并高亮显示，详细开关收纳在“余额设置”中。
+- 普通账单完全不展示余额和花销开关，由系统按账单类型自动处理。
+- 只有转账、退款账单显示折叠的余额与花销选项；默认均勾选。
+- 首次启动显示新手引导，设置页可随时重新查看。
 
 ## 月度余额
 
 ```text
-可用余额 = 总余额 +（收入计入开启时，非转账收入合计）− 本月支出
+本月期末余额 = 上月期末余额
+             + Σ(影响余额的收入)
+             + Σ(影响余额的转账转入)
+             − Σ(影响余额且计入花销的支出)
+             − Σ(影响余额且计入花销的转账转出)
 ```
+
+特殊支出或特殊转出还必须满足 `deductFromBalance=true`。
+
+## 账单字段
+
+- `type`：`income`、`expense`、`transfer`
+- `direction`：收入/转入为 `income`，支出/转出为 `expense`
+- `isSpecial`：是否特殊账单
+- `deductFromBalance`：特殊账单是否从余额扣除
+- `affectBalance`：是否影响余额
+- `paymentMethod`：支付方式
+- `isRefunded`：转出是否已退还
+- `refundOfBillId`：退款记录关联的原转出账单
+- `countInBalance`：是否计入余额花销
 
 ## 首次使用
 
@@ -92,12 +120,10 @@ powershell -ExecutionPolicy Bypass -File .\build_android.ps1
 
 首次构建会安装 Flutter、JDK 17 和 Android SDK。APK 输出在 `build\apk`。
 
-当前构建产物：
+当前 v1.1.0 构建产物位于 `build\apk\manman_ledger.apk`。
 
-- 文件：`build\apk\manman_ledger.apk`
-- 应用名：慢慢记账
 - 包名：`local.personal.manman_ledger`
-- SHA-256：`41F379239FA9964BD3D39A852B231167399147507FE93A1F8C15F20D68C6EC36`
+- SHA-256：`F72459723D32C621A5B0A0FCA2981CA4247E706712ABE3E9A3E455BF3442AE46`
 
 ## 平台差异
 

@@ -8,8 +8,8 @@ from pydantic import ValidationError
 
 from backend.application import LedgerApplication
 from backend.schemas import (
-    BillCategoryUpdate,
     BillCreate,
+    BillUpdate,
     CategoryCreate,
     CategoryUpdate,
     IncomeSettingUpdate,
@@ -36,6 +36,23 @@ class LocalLedgerGateway:
     def _path_parts(self, path: str) -> list[str]:
         return [part for part in path.split("?")[0].strip("/").split("/") if part]
 
+    @staticmethod
+    def _normalize_bill_payload(payload: dict) -> dict:
+        aliases = {
+            "isSpecial": "is_special",
+            "deductFromBalance": "deduct_from_balance",
+            "affectBalance": "affect_balance",
+            "paymentMethod": "payment_method",
+            "isRefunded": "is_refunded",
+            "refundOfBillId": "refund_of_bill_id",
+            "countInBalance": "count_in_balance",
+        }
+        normalized = dict(payload)
+        for source_key, target_key in aliases.items():
+            if source_key in normalized and target_key not in normalized:
+                normalized[target_key] = normalized[source_key]
+        return normalized
+
     async def get(self, path: str, params: dict | None = None) -> Any:
         parts = self._path_parts(path)
         try:
@@ -57,6 +74,7 @@ class LocalLedgerGateway:
                     str(query["month"]),
                     int(query["category_id"]) if query.get("category_id") else None,
                     str(query.get("unclassified", "false")).lower() in {"1", "true"},
+                    str(query["payment_method"]) if query.get("payment_method") else None,
                 )
         except (ValueError, DeepSeekError) as exc:
             raise ApiError(str(exc)) from exc
@@ -72,7 +90,11 @@ class LocalLedgerGateway:
                     CategoryCreate.model_validate(payload),
                 )
             if parts == ["bills"]:
-                return await self.application.create_bill(BillCreate.model_validate(payload))
+                return await self.application.create_bill(
+                    BillCreate.model_validate(self._normalize_bill_payload(payload))
+                )
+            if len(parts) == 3 and parts[0] == "bills" and parts[2] == "refund":
+                return self.application.mark_transfer_refunded(int(parts[1]))
         except (ValueError, DeepSeekError, ValidationError) as exc:
             raise ApiError(str(exc)) from exc
         raise ApiError(f"不支持的本地写入路径：{path}")
@@ -99,9 +121,9 @@ class LocalLedgerGateway:
                     CategoryUpdate.model_validate(payload),
                 )
             if len(parts) == 2 and parts[0] == "bills":
-                return self.application.update_bill_category(
+                return self.application.update_bill(
                     int(parts[1]),
-                    BillCategoryUpdate.model_validate(payload),
+                    BillUpdate.model_validate(self._normalize_bill_payload(payload)),
                 )
             if parts == ["settings", "income-counting"]:
                 return self.application.update_income_setting(

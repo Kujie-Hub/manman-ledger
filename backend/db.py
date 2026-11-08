@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS bills (
     occurred_at TEXT NOT NULL,
     amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
     direction TEXT NOT NULL CHECK(direction IN ('expense', 'income')),
+    bill_type TEXT NOT NULL DEFAULT 'expense'
+        CHECK(bill_type IN ('expense', 'income', 'transfer')),
+    is_special INTEGER NOT NULL DEFAULT 0 CHECK(is_special IN (0, 1)),
+    deduct_from_balance INTEGER NOT NULL DEFAULT 1 CHECK(deduct_from_balance IN (0, 1)),
+    affect_balance INTEGER NOT NULL DEFAULT 1 CHECK(affect_balance IN (0, 1)),
+    payment_method TEXT NOT NULL DEFAULT '其他',
+    is_refunded INTEGER NOT NULL DEFAULT 0 CHECK(is_refunded IN (0, 1)),
+    refund_of_bill_id INTEGER REFERENCES bills(id) ON DELETE SET NULL,
+    count_in_balance INTEGER NOT NULL DEFAULT 1 CHECK(count_in_balance IN (0, 1)),
     description TEXT NOT NULL,
     source_category TEXT,
     app_category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
@@ -121,6 +130,62 @@ class Database:
                 VALUES ('income_counts_toward_balance', 'false')
                 """
             )
+            bill_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(bills)").fetchall()
+            }
+            bill_type_added = "bill_type" not in bill_columns
+            payment_method_added = "payment_method" not in bill_columns
+            affect_balance_added = "affect_balance" not in bill_columns
+            bill_migrations = {
+                "bill_type": "TEXT NOT NULL DEFAULT 'expense'",
+                "is_special": "INTEGER NOT NULL DEFAULT 0",
+                "deduct_from_balance": "INTEGER NOT NULL DEFAULT 1",
+                "affect_balance": "INTEGER NOT NULL DEFAULT 1",
+                "payment_method": "TEXT NOT NULL DEFAULT '其他'",
+                "is_refunded": "INTEGER NOT NULL DEFAULT 0",
+                "refund_of_bill_id": "INTEGER REFERENCES bills(id) ON DELETE SET NULL",
+                "count_in_balance": "INTEGER NOT NULL DEFAULT 1",
+            }
+            for column, definition in bill_migrations.items():
+                if column not in bill_columns:
+                    connection.execute(
+                        f"ALTER TABLE bills ADD COLUMN {column} {definition}"
+                    )
+            if bill_type_added:
+                connection.execute(
+                    """
+                    UPDATE bills
+                    SET bill_type = CASE
+                        WHEN app_category_id IN (
+                            SELECT id FROM categories
+                            WHERE name IN ('转账-转入', '转账-转出')
+                        ) THEN 'transfer'
+                        ELSE direction
+                    END
+                    """
+                )
+            if payment_method_added:
+                connection.execute(
+                    """
+                    UPDATE bills
+                    SET payment_method = CASE source
+                        WHEN 'wechat' THEN '微信'
+                        WHEN 'alipay' THEN '支付宝'
+                        ELSE '其他'
+                    END
+                    """
+                )
+            if affect_balance_added:
+                connection.execute(
+                    """
+                    UPDATE bills
+                    SET affect_balance = CASE
+                        WHEN bill_type = 'income' THEN 0
+                        ELSE 1
+                    END
+                    """
+                )
             from backend.services.default_categories import ensure_default_categories_for_months
 
             ensure_default_categories_for_months(connection)

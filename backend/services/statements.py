@@ -34,6 +34,12 @@ class ParsedBill:
     external_id: str | None
     dedup_key: str
     raw: dict
+    bill_type: str | None = None
+    payment_method: str = "其他"
+    is_special: bool = False
+    deduct_from_balance: bool = True
+    affect_balance: bool | None = None
+    count_in_balance: bool | None = None
 
     @property
     def month(self) -> str:
@@ -181,6 +187,21 @@ def _compose_description(values: dict[str, str]) -> str:
     return " · ".join(dict.fromkeys(parts)) or "未提供描述"
 
 
+def _payment_method(source: str, raw_value: str) -> str:
+    text = raw_value.strip()
+    if "信用卡" in text:
+        return "信用卡"
+    if "银行卡" in text or "银行" in text or "储蓄卡" in text:
+        return "银行卡"
+    if "现金" in text:
+        return "现金"
+    if "微信" in text or source == "wechat":
+        return "微信"
+    if "支付宝" in text or source == "alipay":
+        return "支付宝"
+    return "其他"
+
+
 def _dedup_key(
     source: str,
     external_id: str | None,
@@ -251,6 +272,10 @@ def parse_statement(data: bytes, filename: str) -> ParseResult:
             description = _compose_description(values)
             source_category = values.get("transaction_type") or None
             external_id = values.get("external_id") or None
+            payment_method = _payment_method(
+                source,
+                values.get("payment_method", ""),
+            )
             raw = {column: values.get(key, "") for key, column in column_map.items()}
             bills.append(
                 ParsedBill(
@@ -270,6 +295,7 @@ def parse_statement(data: bytes, filename: str) -> ParseResult:
                         description,
                     ),
                     raw=raw,
+                    payment_method=payment_method,
                 )
             )
         except (ValueError, ArithmeticError, IndexError):
@@ -289,6 +315,12 @@ def parsed_from_manual(
     amount: Decimal,
     direction: str,
     description: str,
+    bill_type: str | None = None,
+    payment_method: str = "其他",
+    is_special: bool = False,
+    deduct_from_balance: bool = True,
+    affect_balance: bool | None = None,
+    count_in_balance: bool | None = None,
 ) -> ParsedBill:
     desc = description.strip()
     occurred_at = occurred_at.replace(tzinfo=None)
@@ -306,5 +338,11 @@ def parsed_from_manual(
         external_id=None,
         dedup_key=unique,
         raw={},
+        bill_type=bill_type or direction,
+        payment_method=payment_method,
+        is_special=is_special,
+        deduct_from_balance=deduct_from_balance,
+        affect_balance=affect_balance,
+        count_in_balance=count_in_balance,
     )
 
