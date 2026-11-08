@@ -84,6 +84,8 @@ class LedgerApplication:
         return self.balance.summary(month)
 
     def update_month(self, month: str, payload: MonthUpdate) -> dict:
+        if payload.use_carryover:
+            return self.ledger.use_month_carryover(month)
         return self.ledger.set_month_balance(month, payload.total_balance)
 
     def list_categories(self, month: str) -> list[dict]:
@@ -189,6 +191,9 @@ class LedgerApplication:
 
     def mark_transfer_refunded(self, bill_id: int) -> dict:
         return self.ledger.mark_transfer_refunded(bill_id)
+
+    def unmark_transfer_refunded(self, bill_id: int) -> dict:
+        return self.ledger.unmark_transfer_refunded(bill_id)
 
     async def import_statement(self, data: bytes, filename: str) -> dict:
         if len(data) > STATEMENT_LIMIT:

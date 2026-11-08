@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS months (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     month TEXT NOT NULL UNIQUE,
     total_balance_cents INTEGER NOT NULL DEFAULT 0 CHECK(total_balance_cents >= 0),
+    balance_mode TEXT NOT NULL DEFAULT 'carryover'
+        CHECK(balance_mode IN ('carryover', 'manual')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -123,6 +125,22 @@ class Database:
                 connection.execute(
                     "ALTER TABLE categories ADD COLUMN counts_toward_balance "
                     "INTEGER NOT NULL DEFAULT 1 CHECK(counts_toward_balance IN (0, 1))"
+                )
+            month_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(months)").fetchall()
+            }
+            if "balance_mode" not in month_columns:
+                connection.execute(
+                    "ALTER TABLE months ADD COLUMN balance_mode TEXT NOT NULL "
+                    "DEFAULT 'carryover'"
+                )
+                connection.execute(
+                    """
+                    UPDATE months
+                    SET balance_mode = 'manual'
+                    WHERE total_balance_cents > 0
+                    """
                 )
             connection.execute(
                 """

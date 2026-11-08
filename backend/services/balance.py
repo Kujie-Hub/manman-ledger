@@ -97,10 +97,13 @@ class BalanceService:
 
         current = self._month_row(month)
         initial_cents = int(current["total_balance_cents"]) if current else 0
+        uses_manual_balance = bool(
+            current and current["balance_mode"] == "manual"
+        )
         opening_cents = (
-            prior_summary["closing_balance_cents"]
-            if prior_summary
-            else initial_cents
+            initial_cents
+            if uses_manual_balance or not prior_summary
+            else prior_summary["closing_balance_cents"]
         )
         stats = self._bill_stats(month)
         closing_cents = (
@@ -115,6 +118,8 @@ class BalanceService:
             "initial_balance": from_cents(initial_cents),
             "opening_balance": from_cents(opening_cents),
             "opening_balance_cents": opening_cents,
+            "uses_manual_balance": uses_manual_balance,
+            "can_use_carryover": bool(prior_summary),
             "available_balance": from_cents(closing_cents),
             "closing_balance": from_cents(closing_cents),
             "closing_balance_cents": closing_cents,
@@ -154,7 +159,7 @@ class BalanceService:
         with self.db.read() as connection:
             return connection.execute(
                 """
-                SELECT m.id, m.month, m.total_balance_cents,
+                SELECT m.id, m.month, m.total_balance_cents, m.balance_mode,
                        (SELECT COUNT(*) FROM bills b WHERE b.month_id = m.id) AS bill_count
                 FROM months m
                 WHERE m.month = ?

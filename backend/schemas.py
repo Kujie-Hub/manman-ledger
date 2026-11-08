@@ -26,6 +26,7 @@ class BillType(StrEnum):
 
 class MonthUpdate(BaseModel):
     total_balance: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    use_carryover: bool = False
 
 
 class CategoryCreate(BaseModel):

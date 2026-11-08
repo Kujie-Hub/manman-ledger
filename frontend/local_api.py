@@ -95,6 +95,13 @@ class LocalLedgerGateway:
                 )
             if len(parts) == 3 and parts[0] == "bills" and parts[2] == "refund":
                 return self.application.mark_transfer_refunded(int(parts[1]))
+            if (
+                len(parts) == 4
+                and parts[0] == "bills"
+                and parts[2] == "refund"
+                and parts[3] == "undo"
+            ):
+                return self.application.unmark_transfer_refunded(int(parts[1]))
         except (ValueError, DeepSeekError, ValidationError) as exc:
             raise ApiError(str(exc)) from exc
         raise ApiError(f"不支持的本地写入路径：{path}")

@@ -13,7 +13,7 @@ from frontend.local_api import ApiError, LocalLedgerGateway
 
 
 API_KEY_SETTING = "personal_ledger_deepseek_api_key"
-ONBOARDING_SETTING = "onboarding_seen_v3"
+ONBOARDING_SETTING = "onboarding_seen_v4"
 
 
 def now_local() -> datetime:
@@ -135,8 +135,9 @@ class LedgerUI:
         sections = [
             (
                 "月度",
-                "左右箭头切换月份，“本月”回到当前月。期初余额是首个有数据的月份起始资金；"
-                "“收入/转入计入余额”会批量设置本月收入和转账账单。",
+                "左右箭头切换月份，“本月”回到当前月。“本月余额”可手动设置；"
+                "有上月数据时也可点击“使用上月结转”。“收入/转入计入余额”会批量设置"
+                "本月收入和转账账单。",
             ),
             (
                 "分类",
@@ -152,7 +153,7 @@ class LedgerUI:
                 "账单",
                 "“编辑”可修正类型、方向和支付方式；转账账单可在“余额设置”中调整"
                 "“记余额”“记花销”。“特殊关注”把账单放到月度页顶部；"
-                "“标记已退还”会生成退款转入。黄色是转账，红色是退款。",
+                "“标记已退还”只会关联已有退款，不会重复新增金额。黄色是转账，红色是退款。",
             ),
             (
                 "设置",
@@ -346,8 +347,8 @@ class LedgerUI:
 
     def _month_view(self) -> list[ft.Control]:
         total = ft.TextField(
-            label="期初余额",
-            value=str(self.summary.get("initial_balance", "0.00")),
+            label="本月余额",
+            value=str(self.summary.get("opening_balance", "0.00")),
             prefix=ft.Text("¥ "),
             width=220,
             keyboard_type=ft.KeyboardType.NUMBER,
@@ -389,26 +390,39 @@ class LedgerUI:
             self._panel(
                 ft.Column(
                     [
-                        *(
+                        ft.Row(
                             [
-                                ft.Row(
+                                total,
+                                ft.FilledButton(
+                                    "保存",
+                                    icon=ft.Icons.SAVE_OUTLINED,
+                                    on_click=lambda _: self.page.run_task(
+                                        self._save_total,
+                                        total.value,
+                                    ),
+                                ),
+                                *(
                                     [
-                                        total,
-                                        ft.FilledButton(
-                                            "保存",
-                                            icon=ft.Icons.SAVE_OUTLINED,
+                                        ft.TextButton(
+                                            "使用上月结转",
                                             on_click=lambda _: self.page.run_task(
-                                                self._save_total,
-                                                total.value,
+                                                self._use_carryover
                                             ),
-                                        ),
-                                    ],
-                                    wrap=True,
-                                    spacing=10,
-                                )
-                            ]
-                            if not self.summary.get("has_previous_data")
-                            else [ft.Text(f"期初 {money(self.summary.get('opening_balance'))}")]
+                                        )
+                                    ]
+                                    if self.summary.get("can_use_carryover")
+                                    else []
+                                ),
+                            ],
+                            wrap=True,
+                            spacing=10,
+                        ),
+                        ft.Text(
+                            "手动余额"
+                            if self.summary.get("uses_manual_balance")
+                            else "自动结转",
+                            size=12,
+                            color="#716861",
                         ),
                         income_switch,
                     ],
@@ -571,6 +585,23 @@ class LedgerUI:
 
         if await self.action(save) is not None:
             self.notify("已保存")
+
+    async def _use_carryover(self) -> None:
+        if self.gateway is None:
+            return
+
+        async def save() -> None:
+            self.summary = await self.gateway.put(
+                f"/months/{self.month}",
+                {
+                    "total_balance": self.summary.get("opening_balance", "0.00"),
+                    "use_carryover": True,
+                },
+            )
+            await self.reload_data()
+
+        if await self.action(save) is not None:
+            self.notify("已使用上月结转")
 
     async def _income_switch(self, enabled: bool) -> None:
         if self.gateway is None:
@@ -1096,6 +1127,11 @@ class LedgerUI:
                 if bill["is_refunded"] or bill["refund_of_bill_id"]
                 else ("#FFF5E8" if bill["type"] == "transfer" else "#FFFFFF")
             )
+            refund_original_id = (
+                int(bill["refund_of_bill_id"])
+                if bill["refund_of_bill_id"]
+                else None
+            )
             cards.append(
                 self._panel(
                     ft.Column(
@@ -1162,6 +1198,25 @@ class LedgerUI:
                                         if bill["type"] == "transfer"
                                         and bill["direction"] == "expense"
                                         and not bill["is_refunded"]
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            ft.TextButton(
+                                                "撤销退还",
+                                                icon=ft.Icons.CLOSE,
+                                                on_click=lambda _, original_id=(
+                                                    bill["id"]
+                                                    if bill["is_refunded"]
+                                                    else refund_original_id
+                                                ): self.page.run_task(
+                                                    self._undo_refund,
+                                                    original_id,
+                                                ),
+                                            )
+                                        ]
+                                        if bill["is_refunded"]
+                                        or refund_original_id is not None
                                         else []
                                     ),
                                 ],
@@ -1303,7 +1358,26 @@ class LedgerUI:
 
         result = await self.action(save)
         if result:
-            self.notify("已标记退还并生成转入退款记录")
+            self.notify(
+                "已关联账单中已有的退款转入"
+                if result.get("refund")
+                else "已标记退还；未找到对应退款转入，请手动补录"
+            )
+
+    async def _undo_refund(self, original_id: int) -> None:
+        if self.gateway is None:
+            return
+
+        async def save() -> dict:
+            result = await self.gateway.post(
+                f"/bills/{original_id}/refund/undo",
+                {},
+            )
+            await self.reload_data()
+            return result
+
+        if await self.action(save) is not None:
+            self.notify("已撤销退还标记")
 
     def _settings_view(self) -> list[ft.Control]:
         key = ft.TextField(

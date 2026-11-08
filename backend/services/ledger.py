@@ -38,10 +38,26 @@ class LedgerService:
             connection.execute(
                 """
                 UPDATE months
-                SET total_balance_cents = ?, updated_at = CURRENT_TIMESTAMP
+                SET total_balance_cents = ?,
+                    balance_mode = 'manual',
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE month = ?
                 """,
                 (cents, month),
+            )
+        return self.balance.summary(month)
+
+    def use_month_carryover(self, month: str) -> dict:
+        month = self.balance.validate_month(month)
+        with self.db.transaction() as connection:
+            self.balance.ensure_month(connection, month)
+            connection.execute(
+                """
+                UPDATE months
+                SET balance_mode = 'carryover', updated_at = CURRENT_TIMESTAMP
+                WHERE month = ?
+                """,
+                (month,),
             )
         return self.balance.summary(month)
 
@@ -401,43 +417,66 @@ class LedgerService:
                 (bill_id,),
             ).fetchone()
             if linked is None:
-                category = connection.execute(
+                linked = connection.execute(
                     """
-                    SELECT id FROM categories
-                    WHERE month_id = ? AND kind = 'income' AND name = '转账-转入'
+                    SELECT b.*
+                    FROM bills b
+                    WHERE b.month_id = ?
+                      AND b.id != ?
+                      AND b.direction = 'income'
+                      AND b.amount_cents = ?
+                      AND b.refund_of_bill_id IS NULL
+                      AND (
+                          b.source_category LIKE '%退款%'
+                          OR b.source_category LIKE '%退还%'
+                          OR b.description LIKE '%退款%'
+                          OR b.description LIKE '%退还%'
+                          OR b.raw_json LIKE '%退款%'
+                          OR b.raw_json LIKE '%退还%'
+                      )
+                    ORDER BY ABS(julianday(b.occurred_at) - julianday(?)),
+                             b.occurred_at DESC,
+                             b.id DESC
                     LIMIT 1
-                    """,
-                    (original["month_id"],),
-                ).fetchone()
-                dedup = f"refund:{bill_id}"
-                cursor = connection.execute(
-                    """
-                    INSERT INTO bills(
-                        month_id, occurred_at, amount_cents, direction, bill_type,
-                        description, source_category, app_category_id, source, external_id,
-                        dedup_key, raw_json, is_special, deduct_from_balance,
-                        affect_balance, payment_method, count_in_balance,
-                        is_refunded, refund_of_bill_id
-                    ) VALUES (?, ?, ?, 'income', 'transfer',
-                        ?, '退款', ?, ?, ?, ?, '{}', 0, 0,
-                        ?, ?, ?, 0, ?)
                     """,
                     (
                         original["month_id"],
-                        original["occurred_at"],
-                        original["amount_cents"],
-                        f"退还 · {original['description']}",
-                        int(category["id"]) if category else None,
-                        original["source"],
-                        f"refund-of-{bill_id}",
-                        dedup,
-                        original["affect_balance"],
-                        original["payment_method"],
-                        original["count_in_balance"],
                         bill_id,
+                        original["amount_cents"],
+                        original["occurred_at"],
                     ),
-                )
-                refund_id = int(cursor.lastrowid)
+                ).fetchone()
+                if linked is not None:
+                    category = connection.execute(
+                        """
+                        SELECT id FROM categories
+                        WHERE month_id = ? AND kind = 'income' AND name = '转账-转入'
+                        LIMIT 1
+                        """,
+                        (original["month_id"],),
+                    ).fetchone()
+                    connection.execute(
+                        """
+                        UPDATE bills
+                        SET bill_type = 'transfer',
+                            app_category_id = COALESCE(app_category_id, ?),
+                            affect_balance = ?,
+                            count_in_balance = ?,
+                            refund_of_bill_id = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            int(category["id"]) if category else None,
+                            original["affect_balance"],
+                            original["count_in_balance"],
+                            bill_id,
+                            linked["id"],
+                        ),
+                    )
+                    refund_id = int(linked["id"])
+                else:
+                    refund_id = None
             else:
                 refund_id = int(linked["id"])
             connection.execute(
@@ -450,6 +489,41 @@ class LedgerService:
             )
         return {
             "original": self.get_bill(bill_id),
-            "refund": self.get_bill(refund_id),
+            "refund": self.get_bill(refund_id) if refund_id is not None else None,
         }
+
+    def unmark_transfer_refunded(self, bill_id: int) -> dict:
+        with self.db.transaction() as connection:
+            original = connection.execute(
+                "SELECT * FROM bills WHERE id = ?",
+                (bill_id,),
+            ).fetchone()
+            if original is None:
+                raise ValueError("账单不存在")
+            linked = connection.execute(
+                "SELECT * FROM bills WHERE refund_of_bill_id = ? ORDER BY id LIMIT 1",
+                (bill_id,),
+            ).fetchone()
+            if linked is not None:
+                generated_external_id = f"refund-of-{bill_id}"
+                if linked["external_id"] == generated_external_id:
+                    connection.execute("DELETE FROM bills WHERE id = ?", (linked["id"],))
+                else:
+                    connection.execute(
+                        """
+                        UPDATE bills
+                        SET refund_of_bill_id = NULL, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (linked["id"],),
+                    )
+            connection.execute(
+                """
+                UPDATE bills
+                SET is_refunded = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (bill_id,),
+            )
+        return {"original": self.get_bill(bill_id), "refund": None}
 
