@@ -1,0 +1,14 @@
+# 本地运行数据与密钥不应提交到版本库。
+.venv/
+__pycache__/
+*.py[cod]
+data.db
+data.db-*
+build/
+dist/
+.flet/
+.pytest_cache/
+*.log
+ui_check*.png
+*.spec
+

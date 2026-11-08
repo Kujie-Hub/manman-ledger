@@ -1,0 +1,79 @@
+{
+  "alipay": {
+    "display_name": "支付宝",
+    "columns": {
+      "date": "交易时间",
+      "transaction_type": "交易分类",
+      "counterparty": "交易对方",
+      "description": "商品说明",
+      "direction": "收/支",
+      "amount": "金额",
+      "status": "交易状态",
+      "external_id": "交易订单号",
+      "note": "备注"
+    },
+    "signature_columns": [
+      "交易时间",
+      "交易分类",
+      "交易对方",
+      "商品说明",
+      "收/支",
+      "金额",
+      "交易状态",
+      "交易订单号"
+    ],
+    "encoding_candidates": [
+      "gb18030",
+      "utf-8-sig"
+    ],
+    "ignored_directions": [
+      "/",
+      "",
+      "不计收支"
+    ],
+    "ignored_status_keywords": [
+      "交易关闭",
+      "交易失败",
+      "支付失败"
+    ]
+  },
+  "wechat": {
+    "display_name": "微信支付",
+    "columns": {
+      "date": "交易时间",
+      "transaction_type": "交易类型",
+      "counterparty": "交易对方",
+      "description": "商品",
+      "direction": "收/支",
+      "amount": "金额(元)",
+      "status": "当前状态",
+      "external_id": "交易单号",
+      "note": "备注"
+    },
+    "signature_columns": [
+      "交易时间",
+      "交易类型",
+      "交易对方",
+      "商品",
+      "收/支",
+      "金额(元)",
+      "当前状态",
+      "交易单号"
+    ],
+    "encoding_candidates": [
+      "utf-8-sig",
+      "gb18030"
+    ],
+    "ignored_directions": [
+      "/",
+      "",
+      "不计收支"
+    ],
+    "ignored_status_keywords": [
+      "已关闭",
+      "支付失败",
+      "已撤销"
+    ]
+  }
+}
+

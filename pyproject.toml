@@ -1,0 +1,39 @@
+[project]
+name = "manman_ledger"
+version = "1.0.0"
+description = "个人自用 Android 本地记账应用"
+requires-python = ">=3.13"
+dependencies = [
+    "flet==1.1.2",
+    "httpx==0.28.1",
+    "openpyxl==3.1.5",
+    "pillow==12.3.0",
+    "pydantic==2.13.4",
+]
+
+[tool.flet]
+product = "慢慢记账"
+company = "Personal"
+org = "local.personal"
+project = "manman_ledger"
+
+[tool.flet.app]
+module = "main"
+exclude = [
+    "AGENT.md",
+    "CHANGELOG.md",
+    "README.md",
+    "build_android.ps1",
+    "requirements.txt",
+    "安装依赖.bat",
+    "data.db",
+    "build",
+    "dist",
+]
+
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true
+
+[tool.flet.android.gradle_properties]
+"android.overridePathCheck" = "true"
+
