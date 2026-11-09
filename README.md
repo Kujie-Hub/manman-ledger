@@ -72,6 +72,8 @@ Android 使用 Flet 提供的 `FLET_APP_STORAGE_DATA` 目录保存 `data.db`。D
 - 明确交易先按生活常识规则分类，其余再交给 DeepSeek；无法判断时保持未分类。
 - 支持现金、微信、支付宝、银行卡、信用卡和其他支付方式。
 - 月度页面按支付方式汇总，账单页可按支付方式筛选。
+- 月度页和分类页将“未分类账单”作为与普通分类同级的入口。
+- 每笔账单可单独删除；账单页可清空当月全部账单，未分类入口可清空未分类账单。
 - 转账转出可标记为已退还，优先关联账单中已有的退款转入，不重复新增金额。
 - 找不到已有退款转入时只标记状态并提示补录；支持撤销退还。
 - 转账与退款账单自动默认计入余额和花销并高亮显示，详细开关收纳在“余额设置”中。
@@ -122,10 +124,10 @@ powershell -ExecutionPolicy Bypass -File .\build_android.ps1
 
 首次构建会安装 Flutter、JDK 17 和 Android SDK。APK 输出在 `build\apk`。
 
-当前 v1.1.1 构建产物位于 `build\apk\manman_ledger.apk`。
+当前 v1.1.2 构建产物位于 `build\apk\manman_ledger-v1.1.2.apk`。
 
 - 包名：`local.personal.manman_ledger`
-- SHA-256：`9399455B91838C3818162F1CDE617F009ED864C437489BA6F70B29A18BA49B4A`
+- SHA-256：`A5F3E943D098F59A0E306B5774317F58E954774F1DFE29F41CF86DCADA222272`
 
 ## 平台差异
 

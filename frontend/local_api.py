@@ -140,6 +140,21 @@ class LocalLedgerGateway:
             raise ApiError(str(exc)) from exc
         raise ApiError(f"不支持的本地更新路径：{path}")
 
+    async def delete(self, path: str, params: dict | None = None) -> Any:
+        parts = self._path_parts(path)
+        query = params or {}
+        try:
+            if len(parts) == 2 and parts[0] == "bills":
+                return self.application.delete_bill(int(parts[1]))
+            if parts == ["bills"]:
+                return self.application.clear_bills(
+                    str(query["month"]),
+                    str(query.get("unclassified", "false")).lower() in {"1", "true"},
+                )
+        except (ValueError, KeyError, DeepSeekError) as exc:
+            raise ApiError(str(exc)) from exc
+        raise ApiError(f"不支持的本地删除路径：{path}")
+
     async def upload(self, path: str, filename: str, data: bytes) -> Any:
         try:
             if path == "/imports/statement":

@@ -402,6 +402,45 @@ class LedgerService:
             raise ValueError("账单不存在")
         return result
 
+    def delete_bill(self, bill_id: int) -> dict:
+        with self.db.transaction() as connection:
+            bill = connection.execute(
+                "SELECT id FROM bills WHERE id = ?",
+                (bill_id,),
+            ).fetchone()
+            if bill is None:
+                raise ValueError("账单不存在")
+            connection.execute("DELETE FROM bills WHERE id = ?", (bill_id,))
+        return {"deleted": 1, "bill_id": bill_id}
+
+    def clear_bills(self, month: str, unclassified: bool = False) -> dict:
+        month = self.balance.validate_month(month)
+        with self.db.transaction() as connection:
+            month_row = connection.execute(
+                "SELECT id FROM months WHERE month = ?",
+                (month,),
+            ).fetchone()
+            if month_row is None:
+                return {"deleted": 0, "month": month}
+            if unclassified:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM bills
+                    WHERE month_id = ? AND app_category_id IS NULL
+                    """,
+                    (month_row["id"],),
+                )
+            else:
+                cursor = connection.execute(
+                    "DELETE FROM bills WHERE month_id = ?",
+                    (month_row["id"],),
+                )
+        return {
+            "deleted": int(cursor.rowcount),
+            "month": month,
+            "unclassified": unclassified,
+        }
+
     def mark_transfer_refunded(self, bill_id: int) -> dict:
         with self.db.transaction() as connection:
             original = connection.execute(

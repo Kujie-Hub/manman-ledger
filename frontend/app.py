@@ -142,7 +142,7 @@ class LedgerUI:
             (
                 "分类",
                 "支出分类只需设置限额。“已花”自动累计账单，“余额”由限额减去已花得到，"
-                "不需要手动分配。",
+                "不需要手动分配。“未分类账单”与普通分类同级，可进入查看。",
             ),
             (
                 "导入",
@@ -153,7 +153,8 @@ class LedgerUI:
                 "账单",
                 "“编辑”可修正类型、方向和支付方式；转账账单可在“余额设置”中调整"
                 "“记余额”“记花销”。“特殊关注”把账单放到月度页顶部；"
-                "“标记已退还”只会关联已有退款，不会重复新增金额。黄色是转账，红色是退款。",
+                "“标记已退还”只会关联已有退款，不会重复新增金额。黄色是转账，红色是退款。"
+                "每笔账单可单独删除，账单页也可全部清空。",
             ),
             (
                 "设置",
@@ -523,8 +524,6 @@ class LedgerUI:
         return self._panel(ft.Column(controls, spacing=7))
 
     def _category_rows(self) -> list[ft.Control]:
-        if not self.categories:
-            return [ft.Text("暂无分类")]
         controls: list[ft.Control] = []
         for category in self.categories:
             if category["name"].startswith("转账-"):
@@ -560,7 +559,43 @@ class LedgerUI:
                     on_click=lambda _, category_id=category["id"]: self._open_category(category_id),
                 )
             )
+        controls.append(self._unclassified_category_row())
         return controls
+
+    def _unclassified_bills(self) -> list[dict]:
+        return [bill for bill in self.bills if bill["category_id"] is None]
+
+    def _unclassified_category_row(self) -> ft.Control:
+        items = self._unclassified_bills()
+        total = sum(
+            (Decimal(str(bill["amount"])) for bill in items),
+            Decimal("0"),
+        )
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text("未分类账单", weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                f"{len(items)} 笔 · 合计 {money(total)}",
+                                size=12,
+                                color="#716861",
+                            ),
+                        ],
+                        expand=True,
+                        spacing=3,
+                    ),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT, color="#8A817A"),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=16,
+            border_radius=16,
+            bgcolor="#FFFFFF",
+            border=ft.Border.all(1, "#E8E2DA"),
+            on_click=lambda _: self._open_unclassified(),
+        )
 
     def _open_category(self, category_id: int) -> None:
         self.detail_id = category_id
@@ -663,7 +698,36 @@ class LedgerUI:
                 )
             ),
             *[self._category_card(item) for item in self.categories],
+            self._unclassified_category_card(),
         ]
+
+    def _unclassified_category_card(self) -> ft.Control:
+        items = self._unclassified_bills()
+        total = sum(
+            (Decimal(str(bill["amount"])) for bill in items),
+            Decimal("0"),
+        )
+        return self._panel(
+            ft.Column(
+                [
+                    ft.Text("未分类账单", size=17, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        f"{len(items)} 笔 · 合计 {money(total)}",
+                        color="#716861",
+                    ),
+                    ft.Row(
+                        [
+                            ft.TextButton(
+                                "查看账单",
+                                on_click=lambda _: self._open_unclassified(),
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                    ),
+                ],
+                spacing=7,
+            )
+        )
 
     def _category_card(self, category: dict) -> ft.Control:
         if category["name"].startswith("转账-"):
@@ -709,8 +773,8 @@ class LedgerUI:
 
     def _category_detail(self) -> list[ft.Control]:
         if self.show_unclassified:
-            title = "未分类"
-            items = [bill for bill in self.bills if bill["category_id"] is None]
+            title = "未分类账单"
+            items = self._unclassified_bills()
         else:
             category = next(
                 (item for item in self.categories if item["id"] == self.detail_id),
@@ -721,15 +785,25 @@ class LedgerUI:
                 return self._category_view()
             title = category["name"]
             items = [bill for bill in self.bills if bill["category_id"] == category["id"]]
+        heading: list[ft.Control] = [
+            ft.IconButton(
+                icon=ft.Icons.ARROW_BACK,
+                on_click=lambda _: self._close_detail(),
+            ),
+            ft.Text(title, size=19, weight=ft.FontWeight.BOLD),
+        ]
+        if self.show_unclassified and items:
+            heading.append(
+                ft.TextButton(
+                    "清空未分类",
+                    icon=ft.Icons.DELETE_SWEEP_OUTLINED,
+                    on_click=lambda _: self._confirm_clear_bills(len(items), True),
+                )
+            )
         return [
             ft.Row(
-                [
-                    ft.IconButton(
-                        icon=ft.Icons.ARROW_BACK,
-                        on_click=lambda _: self._close_detail(),
-                    ),
-                    ft.Text(title, size=19, weight=ft.FontWeight.BOLD),
-                ]
+                heading,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
             self._month_switcher(),
             *self._bill_cards(items, compact=True),
@@ -1030,14 +1104,28 @@ class LedgerUI:
             on_select=lambda event: self._set_payment_filter(event.control.value),
         )
         if self.show_unclassified:
-            items = [bill for bill in self.bills if bill["category_id"] is None]
+            items = self._unclassified_bills()
             heading = ft.Row(
                 [
                     ft.IconButton(
                         icon=ft.Icons.ARROW_BACK,
                         on_click=lambda _: self._close_detail(),
                     ),
-                    ft.Text("未分类", size=19, weight=ft.FontWeight.BOLD),
+                    ft.Text("未分类账单", size=19, weight=ft.FontWeight.BOLD),
+                    *(
+                        [
+                            ft.TextButton(
+                                "清空未分类",
+                                icon=ft.Icons.DELETE_SWEEP_OUTLINED,
+                                on_click=lambda _: self._confirm_clear_bills(
+                                    len(items),
+                                    True,
+                                ),
+                            )
+                        ]
+                        if items
+                        else []
+                    ),
                 ]
             )
         else:
@@ -1058,8 +1146,19 @@ class LedgerUI:
                         "未分类",
                         on_click=lambda _: self._open_unclassified(),
                     ),
+                    ft.TextButton(
+                        "全部清空",
+                        icon=ft.Icons.DELETE_SWEEP_OUTLINED,
+                        on_click=lambda _: self._confirm_clear_bills(
+                            len(self.bills),
+                            False,
+                        ),
+                        disabled=not self.bills,
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                wrap=True,
+                run_spacing=4,
             )
         return [self._month_switcher(), heading, *self._bill_cards(items)]
 
@@ -1070,7 +1169,84 @@ class LedgerUI:
     def _open_unclassified(self) -> None:
         self.show_unclassified = True
         self.detail_id = None
-        self.render()
+        self.open_section(1)
+
+    def _confirm_delete_bill(self, bill: dict) -> None:
+        async def confirm() -> None:
+            self.page.pop_dialog()
+            await self._delete_bill(bill["id"])
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title=ft.Text("删除账单"),
+                content=ft.Text(f"{bill['description']}\n{money(bill['amount'])}\n删除后无法恢复。"),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                    ft.FilledButton(
+                        "删除",
+                        bgcolor="#B3261E",
+                        color="#FFFFFF",
+                        on_click=lambda _: self.page.run_task(confirm),
+                    ),
+                ],
+            )
+        )
+
+    async def _delete_bill(self, bill_id: int) -> None:
+        if self.gateway is None:
+            return
+
+        async def remove() -> dict:
+            result = await self.gateway.delete(f"/bills/{bill_id}")
+            await self.reload_data()
+            return result
+
+        result = await self.action(remove)
+        if result:
+            self.notify("账单已删除")
+
+    def _confirm_clear_bills(self, count: int, unclassified: bool) -> None:
+        if count <= 0:
+            return
+        scope = "未分类账单" if unclassified else "全部账单"
+
+        async def clear() -> None:
+            self.page.pop_dialog()
+            if self.gateway is None:
+                return
+
+            async def remove() -> dict:
+                result = await self.gateway.delete(
+                    "/bills",
+                    {
+                        "month": self.month,
+                        "unclassified": "true" if unclassified else "false",
+                    },
+                )
+                await self.reload_data()
+                return result
+
+            result = await self.action(remove)
+            if result:
+                self.notify(f"已清空 {result['deleted']} 笔{scope}")
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title=ft.Text("全部清空" if not unclassified else "清空未分类"),
+                content=ft.Text(
+                    f"将清空 {self.month} 的 {count} 笔{scope}。\n删除后无法恢复。"
+                ),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                    ft.FilledButton(
+                        "清空",
+                        bgcolor="#B3261E",
+                        color="#FFFFFF",
+                        on_click=lambda _: self.page.run_task(clear),
+                    ),
+                ],
+            )
+        )
 
     def _bill_cards(self, bills: list[dict], compact: bool = False) -> list[ft.Control]:
         if not bills:
@@ -1183,6 +1359,11 @@ class LedgerUI:
                                     ft.TextButton(
                                         "编辑",
                                         on_click=lambda _, item=bill: self._edit_bill(item),
+                                    ),
+                                    ft.TextButton(
+                                        "删除",
+                                        icon=ft.Icons.DELETE_OUTLINE,
+                                        on_click=lambda _, item=bill: self._confirm_delete_bill(item),
                                     ),
                                     *(
                                         [

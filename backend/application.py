@@ -195,6 +195,12 @@ class LedgerApplication:
     def unmark_transfer_refunded(self, bill_id: int) -> dict:
         return self.ledger.unmark_transfer_refunded(bill_id)
 
+    def delete_bill(self, bill_id: int) -> dict:
+        return self.ledger.delete_bill(bill_id)
+
+    def clear_bills(self, month: str, unclassified: bool = False) -> dict:
+        return self.ledger.clear_bills(month, unclassified)
+
     async def import_statement(self, data: bytes, filename: str) -> dict:
         if len(data) > STATEMENT_LIMIT:
             raise ValueError("账单文件不能超过 25 MB")
