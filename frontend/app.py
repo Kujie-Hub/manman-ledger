@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable
@@ -39,6 +40,24 @@ def money(value: Any) -> str:
         return "¥0.00"
 
 
+def compact_money(value: Any) -> str:
+    try:
+        amount = Decimal(str(value or 0))
+    except InvalidOperation:
+        amount = Decimal("0")
+    sign = "−" if amount < 0 else ""
+    absolute = abs(amount)
+    if absolute >= Decimal("10000"):
+        scaled = (absolute / Decimal("10000")).quantize(Decimal("0.1"))
+        return f"{sign}¥{scaled}万"
+    if absolute >= Decimal("1000"):
+        scaled = (absolute / Decimal("1000")).quantize(Decimal("0.1"))
+        return f"{sign}¥{scaled}千"
+    if absolute == absolute.to_integral():
+        return f"{sign}¥{absolute:,.0f}"
+    return f"{sign}¥{absolute:,.2f}"
+
+
 def kind_label(value: str) -> str:
     return "收入分类" if value == "income" else "支出分类"
 
@@ -68,6 +87,9 @@ class LedgerUI:
         self.section = 0
         self.detail_id: int | None = None
         self.show_unclassified = False
+        self.category_view_mode = "list"
+        self.category_day: str | None = None
+        self.month_day: str | None = None
         self.payment_filter = "全部"
         self.summary: dict = {}
         self.categories: list[dict] = []
@@ -249,6 +271,8 @@ class LedgerUI:
         self.section = int(event.control.selected_index or 0)
         self.detail_id = None
         self.show_unclassified = False
+        self.category_day = None
+        self.month_day = None
         self.render()
 
     def open_section(self, section: int) -> None:
@@ -328,6 +352,8 @@ class LedgerUI:
         self.month = month
         self.detail_id = None
         self.show_unclassified = False
+        self.category_day = None
+        self.month_day = None
         await self.reload_data()
 
     def _metric(self, label: str, value: str, color: str) -> ft.Container:
@@ -347,6 +373,9 @@ class LedgerUI:
         )
 
     def _month_view(self) -> list[ft.Control]:
+        if self.month_day is not None:
+            return self._month_day_view()
+
         total = ft.TextField(
             label="本月余额",
             value=str(self.summary.get("opening_balance", "0.00")),
@@ -430,11 +459,35 @@ class LedgerUI:
                     spacing=10,
                 )
             ),
+            self._calendar_section(
+                self.bills,
+                "本月总收支",
+                lambda day: self._open_month_day(day),
+            ),
             self._special_section(),
             self._payment_summary(),
             ft.Text("分类", size=17, weight=ft.FontWeight.BOLD),
             *self._category_rows(),
         ]
+
+    def _open_month_day(self, day: str) -> None:
+        self.month_day = day
+        self.render()
+
+    def _close_month_day(self) -> None:
+        self.month_day = None
+        self.render()
+
+    def _month_day_view(self) -> list[ft.Control]:
+        day = self.month_day or ""
+        items = [bill for bill in self.bills if bill["occurred_at"][:10] == day]
+        return self._day_bill_view(
+            day,
+            items,
+            self._close_month_day,
+            "返回月度日历",
+            compact=False,
+        )
 
     def _previous_month_card(self) -> ft.Control:
         if self.summary.get("has_previous_data"):
@@ -600,6 +653,7 @@ class LedgerUI:
     def _open_category(self, category_id: int) -> None:
         self.detail_id = category_id
         self.show_unclassified = False
+        self.category_day = None
         self.open_section(1)
 
     async def _save_total(self, value: str) -> None:
@@ -785,10 +839,31 @@ class LedgerUI:
                 return self._category_view()
             title = category["name"]
             items = [bill for bill in self.bills if bill["category_id"] == category["id"]]
+        if self.category_day is not None:
+            day = self.category_day
+            daily_items = [
+                bill for bill in items if bill["occurred_at"][:10] == day
+            ]
+            return self._day_bill_view(
+                day,
+                daily_items,
+                self._close_category_day,
+                "返回分类日历",
+                compact=True,
+            )
         heading: list[ft.Control] = [
             ft.IconButton(
                 icon=ft.Icons.ARROW_BACK,
                 on_click=lambda _: self._close_detail(),
+            ),
+            ft.TextButton(
+                "列表" if self.category_view_mode == "calendar" else "日历",
+                icon=(
+                    ft.Icons.VIEW_LIST
+                    if self.category_view_mode == "calendar"
+                    else ft.Icons.CALENDAR_MONTH
+                ),
+                on_click=lambda _: self._toggle_category_view(),
             ),
             ft.Text(title, size=19, weight=ft.FontWeight.BOLD),
         ]
@@ -804,14 +879,41 @@ class LedgerUI:
             ft.Row(
                 heading,
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                wrap=True,
             ),
             self._month_switcher(),
-            *self._bill_cards(items, compact=True),
+            *(
+                [
+                    self._calendar_section(
+                        items,
+                        f"{title} · 本月合计",
+                        lambda day: self._open_category_day(day),
+                    )
+                ]
+                if self.category_view_mode == "calendar"
+                else self._bill_cards(items, compact=True)
+            ),
         ]
+
+    def _toggle_category_view(self) -> None:
+        self.category_view_mode = (
+            "list" if self.category_view_mode == "calendar" else "calendar"
+        )
+        self.category_day = None
+        self.render()
+
+    def _open_category_day(self, day: str) -> None:
+        self.category_day = day
+        self.render()
+
+    def _close_category_day(self) -> None:
+        self.category_day = None
+        self.render()
 
     def _close_detail(self) -> None:
         self.detail_id = None
         self.show_unclassified = False
+        self.category_day = None
         self.render()
 
     async def _create_category(self, name: str, kind: str, limit: str) -> None:
@@ -1169,6 +1271,7 @@ class LedgerUI:
     def _open_unclassified(self) -> None:
         self.show_unclassified = True
         self.detail_id = None
+        self.category_day = None
         self.open_section(1)
 
     def _confirm_delete_bill(self, bill: dict) -> None:
@@ -1247,6 +1350,244 @@ class LedgerUI:
                 ],
             )
         )
+
+    @staticmethod
+    def _bill_totals(bills: list[dict]) -> dict[str, Decimal]:
+        totals = {
+            "income": Decimal("0"),
+            "expense": Decimal("0"),
+            "transfer_in": Decimal("0"),
+            "transfer_out": Decimal("0"),
+        }
+        for bill in bills:
+            try:
+                amount = Decimal(str(bill["amount"]))
+            except (InvalidOperation, KeyError, TypeError):
+                continue
+            bill_type = bill.get("type")
+            direction = bill.get("direction")
+            if bill_type == "income":
+                totals["income"] += amount
+            elif bill_type == "expense":
+                totals["expense"] += amount
+            elif bill_type == "transfer" and direction == "income":
+                totals["transfer_in"] += amount
+            elif bill_type == "transfer" and direction == "expense":
+                totals["transfer_out"] += amount
+        return totals
+
+    def _calendar_summary(
+        self,
+        bills: list[dict],
+        title: str,
+    ) -> ft.Control:
+        totals = self._bill_totals(bills)
+        net = totals["income"] - totals["expense"]
+        transfer_net = totals["transfer_in"] - totals["transfer_out"]
+        return ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Text(title, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"{len(bills)} 笔", size=12, color="#716861"),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                ft.Row(
+                    [
+                        ft.Text(
+                            f"收入 {money(totals['income'])}",
+                            size=12,
+                            color="#245C86",
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                        ft.Text(
+                            f"支出 {money(totals['expense'])}",
+                            size=12,
+                            color="#8C3B2E",
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                        ft.Text(
+                            f"结余 {money(net)}",
+                            size=12,
+                            color="#2F5D50",
+                        ),
+                        ft.Text(
+                            f"转账 入 {money(totals['transfer_in'])} / "
+                            f"出 {money(totals['transfer_out'])}",
+                            size=12,
+                            color="#7A4E2D",
+                        ),
+                        *(
+                            [
+                                ft.Text(
+                                    f"转账净额 {money(transfer_net)}",
+                                    size=12,
+                                    color="#7A4E2D",
+                                )
+                            ]
+                            if transfer_net != 0
+                            else []
+                        ),
+                    ],
+                    wrap=True,
+                    spacing=12,
+                    run_spacing=6,
+                ),
+            ],
+            spacing=8,
+        )
+
+    def _calendar_section(
+        self,
+        bills: list[dict],
+        title: str,
+        on_select_day: Callable[[str], None],
+    ) -> ft.Control:
+        year, month_number = map(int, self.month.split("-"))
+        by_day: dict[str, list[dict]] = {}
+        for bill in bills:
+            by_day.setdefault(bill["occurred_at"][:10], []).append(bill)
+
+        weekdays = ft.Row(
+            [
+                ft.Text(
+                    label,
+                    size=11,
+                    color="#716861",
+                    text_align=ft.TextAlign.CENTER,
+                    expand=True,
+                )
+                for label in ["一", "二", "三", "四", "五", "六", "日"]
+            ],
+            spacing=2,
+        )
+        week_rows: list[ft.Control] = [weekdays]
+        today = now_local().strftime("%Y-%m-%d")
+        for week in calendar.monthcalendar(year, month_number):
+            cells: list[ft.Control] = []
+            for day_number in week:
+                if day_number == 0:
+                    cells.append(
+                        ft.Container(
+                            expand=True,
+                            height=88,
+                            border_radius=8,
+                            bgcolor="#F8F6F2",
+                        )
+                    )
+                    continue
+                day = f"{year:04d}-{month_number:02d}-{day_number:02d}"
+                day_bills = by_day.get(day, [])
+                cells.append(
+                    self._calendar_day_cell(
+                        day,
+                        day_number,
+                        day_bills,
+                        on_select_day,
+                        is_today=day == today,
+                    )
+                )
+            week_rows.append(ft.Row(cells, spacing=2))
+
+        selected_days = sum(1 for day in by_day if day.startswith(self.month + "-"))
+        return self._panel(
+            ft.Column(
+                [
+                    self._calendar_summary(bills, title),
+                    ft.Divider(height=1, color="#E8E2DA"),
+                    *week_rows,
+                    ft.Text(
+                        f"有账单 {selected_days} 天 · 点击日期查看当天账单",
+                        size=11,
+                        color="#716861",
+                    ),
+                ],
+                spacing=6,
+            )
+        )
+
+    def _calendar_day_cell(
+        self,
+        day: str,
+        day_number: int,
+        bills: list[dict],
+        on_select_day: Callable[[str], None],
+        is_today: bool,
+    ) -> ft.Control:
+        totals = self._bill_totals(bills)
+        transfer_total = totals["transfer_in"] + totals["transfer_out"]
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        str(day_number),
+                        size=11,
+                        weight=ft.FontWeight.BOLD if is_today else None,
+                        color="#2F5D50" if is_today else "#3D3732",
+                    ),
+                    ft.Text(
+                        f"收{compact_money(totals['income'])}",
+                        size=8,
+                        color="#245C86" if totals["income"] else "#A59C94",
+                    ),
+                    ft.Text(
+                        f"支{compact_money(totals['expense'])}",
+                        size=8,
+                        color="#8C3B2E" if totals["expense"] else "#A59C94",
+                    ),
+                    *(
+                        [
+                            ft.Text(
+                                f"转{compact_money(transfer_total)}",
+                                size=8,
+                                color="#7A4E2D",
+                            )
+                        ]
+                        if transfer_total
+                        else []
+                    ),
+                ],
+                spacing=1,
+                horizontal_alignment=ft.CrossAxisAlignment.START,
+            ),
+            expand=True,
+            height=88,
+            padding=ft.Padding.symmetric(horizontal=3, vertical=4),
+            border_radius=8,
+            bgcolor="#E9F2ED" if is_today else "#FFFFFF",
+            border=ft.Border.all(1, "#CFE0D6" if is_today else "#ECE7DF"),
+            on_click=lambda _, selected_day=day: on_select_day(selected_day),
+        )
+
+    def _day_bill_view(
+        self,
+        day: str,
+        bills: list[dict],
+        on_back: Callable[[], None],
+        back_label: str,
+        compact: bool,
+    ) -> list[ft.Control]:
+        try:
+            day_label = datetime.strptime(day, "%Y-%m-%d").strftime("%Y年%m月%d日")
+        except ValueError:
+            day_label = day
+        return [
+            ft.Row(
+                [
+                    ft.TextButton(
+                        back_label,
+                        icon=ft.Icons.ARROW_BACK,
+                        on_click=lambda _: on_back(),
+                    ),
+                    ft.Text(day_label, size=19, weight=ft.FontWeight.BOLD),
+                ],
+                wrap=True,
+                spacing=8,
+            ),
+            self._panel(self._calendar_summary(bills, "当天合计")),
+            *self._bill_cards(bills, compact=compact),
+        ]
 
     def _bill_cards(self, bills: list[dict], compact: bool = False) -> list[ft.Control]:
         if not bills:

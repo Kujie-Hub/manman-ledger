@@ -1,4 +1,4 @@
-# Build the Android APK. The mobile app connects to a separately running backend.
+# Build the self-contained Android APK.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -13,7 +13,8 @@ if (-not (Test-Path ".venv\Scripts\flet.exe")) {
     throw "Run install_dependencies.bat first."
 }
 
-& ".venv\Scripts\flet.exe" build apk --yes --log-format plain .
+& ".venv\Scripts\flet.exe" build apk --yes --log-format plain `
+    --build-version 1.1.3 --build-number 113 .
 
 Write-Host "APK output is under build\apk."
 
